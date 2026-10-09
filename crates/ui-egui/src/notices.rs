@@ -30,6 +30,10 @@ pub struct Notice {
     /// `{name}` values filled into the title and lines after they are translated.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<(String, String)>,
+    /// egui input time (seconds) this notice was first drawn; the auto-hide timer runs from here
+    /// and is reset while the pointer rests on the stack (issue #2022). `None` until first shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown_at: Option<f64>,
 }
 
 impl Notice {
@@ -43,7 +47,7 @@ impl Notice {
 /// Show a notice (newest last); returns its id.
 pub fn post(app: &mut PhotocraftApp, title: impl Into<String>, lines: Vec<String>, error: bool, dismiss_pref: Option<&str>) -> u64 {
     let id = app.ui.alloc_id();
-    app.ui.notices.push(Notice { id, title: title.into(), lines, error, dismiss_pref: dismiss_pref.map(str::to_owned), args: Vec::new() });
+    app.ui.notices.push(Notice { id, title: title.into(), lines, error, dismiss_pref: dismiss_pref.map(str::to_owned), args: Vec::new(), shown_at: None });
     cap_notices(app);
     id
 }
@@ -139,7 +143,40 @@ pub fn error(app: &mut PhotocraftApp, message: String) {
     post(app, message, Vec::new(), true, None);
 }
 
-/// Draw the notices; each has a close button.
+/// Auto-hide (issue #2022): drop notices whose delay has elapsed, pausing the timers of any the
+/// pointer is resting on. `hovered` is true when the pointer is over the notice stack, in which
+/// case the timers are reset to `now` and nothing expires until the pointer moves away. Returns
+/// the seconds until the next notice would expire, so the caller can request a repaint then.
+fn expire(app: &mut PhotocraftApp, now: f64, hovered: bool, auto_hide: bool, duration: f64) -> Option<f64> {
+    if !auto_hide {
+        return None;
+    }
+    let mut expired = Vec::new();
+    let mut next = f64::INFINITY;
+    for n in &mut app.ui.notices {
+        if n.shown_at.is_none() {
+            n.shown_at = Some(now);
+        }
+        let shown_at = n.shown_at.unwrap_or(now);
+        if hovered {
+            n.shown_at = Some(now);
+            continue;
+        }
+        let elapsed = (now - shown_at).max(0.0);
+        if elapsed >= duration {
+            expired.push(n.id);
+        } else {
+            next = next.min(duration - elapsed);
+        }
+    }
+    if !expired.is_empty() {
+        app.ui.notices.retain(|n| !expired.contains(&n.id));
+    }
+    next.is_finite().then_some(next)
+}
+
+/// Draw the notices; each has a close button. When Interface › Notification › Auto Hide Notices
+/// is on, a notice disappears once its delay is up unless the pointer rests on the stack.
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if app.ui.notices.is_empty() {
         return;
@@ -147,7 +184,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let t = crate::theme::Tokens::get(ctx);
     let mut dismiss_id = None;
     // Clear the status bar (~24 px) and leave the dock's edge some air.
-    egui::Area::new(egui::Id::new("photocraft-notices"))
+    let area = egui::Area::new(egui::Id::new("photocraft-notices"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -36.0))
         .interactable(true)
@@ -185,6 +222,15 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         });
     if let Some(id) = dismiss_id {
         dismiss(app, id);
+    }
+    let (auto_hide, duration) = {
+        let i = &app.session.prefs().interface;
+        (i.notification_auto_hide, f64::from(i.notification_duration_seconds.max(1)))
+    };
+    let now = ctx.input(|input| input.time);
+    let hovered = ctx.pointer_hover_pos().is_some_and(|p| area.response.rect.contains(p));
+    if let Some(wait) = expire(app, now, hovered, auto_hide, duration) {
+        ctx.request_repaint_after(std::time::Duration::try_from_secs_f64(wait).unwrap_or_default());
     }
 }
 
@@ -317,5 +363,43 @@ mod tests {
         let id = app.ui.notices[0].id;
         dismiss(&mut app, id);
         assert_eq!(app.session.prefs().dialogs.get("ui.testNoticeDismissed").and_then(serde_json::Value::as_bool), Some(true));
+    }
+
+    #[test]
+    fn notices_auto_hide_after_their_delay() {
+        let mut app = PhotocraftApp::new(Session::new(), Services::default());
+        post(&mut app, "Transient", Vec::new(), false, None);
+        // The first draw stamps the timer and schedules the hide.
+        assert_eq!(expire(&mut app, 100.0, false, true, 6.0), Some(6.0));
+        assert_eq!(app.ui.notices.len(), 1);
+        // Still there just before the delay, the next repaint a second away.
+        assert_eq!(expire(&mut app, 105.0, false, true, 6.0), Some(1.0));
+        assert_eq!(app.ui.notices.len(), 1);
+        // Gone once the delay has elapsed.
+        assert_eq!(expire(&mut app, 106.0, false, true, 6.0), None);
+        assert!(app.ui.notices.is_empty());
+    }
+
+    #[test]
+    fn hover_pauses_the_autohide_timer_and_leaving_restarts_it() {
+        let mut app = PhotocraftApp::new(Session::new(), Services::default());
+        post(&mut app, "Transient", Vec::new(), false, None);
+        // While the pointer rests on the stack the timer keeps resetting: it never expires.
+        for t in [5.0, 6.0, 7.0, 100.0] {
+            assert_eq!(expire(&mut app, t, true, true, 6.0), None, "paused at {t}");
+            assert_eq!(app.ui.notices.len(), 1, "still shown at {t}");
+        }
+        // The pointer moves away: a fresh full delay remains.
+        assert_eq!(expire(&mut app, 100.5, false, true, 6.0), Some(5.5));
+        assert_eq!(app.ui.notices.len(), 1);
+    }
+
+    #[test]
+    fn autohide_can_be_switched_off() {
+        let mut app = PhotocraftApp::new(Session::new(), Services::default());
+        post(&mut app, "Persistent", Vec::new(), false, None);
+        assert_eq!(expire(&mut app, 0.0, false, false, 6.0), None);
+        assert_eq!(expire(&mut app, 1_000_000.0, false, false, 6.0), None);
+        assert_eq!(app.ui.notices.len(), 1, "off: the notice stays until dismissed");
     }
 }
