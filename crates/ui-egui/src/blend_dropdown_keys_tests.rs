@@ -1,5 +1,6 @@
 //! #1318: the Layers panel's Blend Mode dropdown takes the arrow keys once it is open, ahead of
-//! the tool shortcuts (the Move tool's arrow-key nudge).
+//! the tool shortcuts (the Move tool's arrow-key nudge). #2061: the mouse wheel walks the same
+//! list, so the mode changes (and shows) as the wheel turns, with no click to choose.
 
 use egui::accesskit::Role;
 use egui_kittest::Harness;
@@ -44,4 +45,46 @@ fn arrow_keys_step_the_open_blend_mode_dropdown_without_nudging_the_layer() {
     h.key_press(egui::Key::ArrowUp);
     h.run_steps(2);
     assert_eq!(layer(&h).0, BlendMode::Normal);
+}
+
+#[test]
+fn mouse_wheel_steps_the_open_blend_mode_dropdown() {
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_max_steps(64).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        app.ui.tool = Tool::Move;
+        app
+    });
+    h.run_steps(6);
+    let blend = |h: &Harness<'_, PhotocraftApp>| {
+        let st = h.state().session.active().unwrap();
+        st.doc.layer(st.active_layer.unwrap()).unwrap().blend
+    };
+    assert_eq!(blend(&h), BlendMode::Normal);
+    let named = |n: &egui_kittest::Node<'_>| {
+        let a = n.accesskit_node();
+        a.value().as_deref() == Some("Normal") || a.label().as_deref() == Some("Normal")
+    };
+    let combo = h.query_all_by_role(Role::ComboBox).find(|n| named(n));
+    combo.expect("the Layers panel's Blend Mode dropdown").click();
+    h.run_steps(2);
+    h.hover_at(h.get_by_label("Multiply").rect().center());
+    h.run_steps(2);
+    let wheel = |h: &Harness<'_, PhotocraftApp>, dy: f32| {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    };
+    wheel(&h, -1.0);
+    h.run_steps(2);
+    assert_ne!(blend(&h), BlendMode::Normal, "a notch down picks the next mode");
+    wheel(&h, 1.0);
+    h.run_steps(2);
+    assert_eq!(blend(&h), BlendMode::Normal, "a notch up goes back");
 }

@@ -425,7 +425,12 @@ fn wheel_notches(ui: &Ui, resp: &Response) -> f32 {
     if !resp.hovered() {
         return 0.0;
     }
-    let acc_id = resp.id.with("wheel-acc");
+    wheel_notches_at(ui, resp.id.with("wheel-acc"))
+}
+
+/// [`wheel_notches`] for an accumulator kept under `acc_id`, when the caller has already checked
+/// that the pointer is over the wheel's target.
+fn wheel_notches_at(ui: &Ui, acc_id: egui::Id) -> f32 {
     let mut acc: f32 = ui.data(|d| d.get_temp(acc_id)).unwrap_or(0.0);
     let per_line = ui.ctx().options(|o| o.input_options.line_scroll_speed);
     let per_line = if per_line.is_finite() && per_line > 0.0 { per_line } else { 40.0 };
@@ -825,8 +830,26 @@ pub fn dropdown_hovered<T: PartialEq + Clone>(ui: &mut Ui, id: &str, current: &m
     let label = options.iter().find(|(v, _)| v == current).map(|(_, l)| tl!(l)).unwrap_or("—");
     let (mut changed, mut hovered) = (false, None);
     let response = egui::ComboBox::from_id_salt(id).selected_text(label).width(width).height(420.0).icon(chevron_icon).show_ui(ui, |ui| {
+        // The wheel walks the open list (#2061) instead of scrolling it, so the choice (and its
+        // preview) follows the wheel as it turns.
+        let mut wheeled = false;
+        if let Some(step) = combo_box_wheel_step(ui) {
+            let index = options.iter().position(|(v, _)| v == current).unwrap_or(0);
+            if let Some(next) = stepped_index(index, options.len(), step)
+                && let Some((v, _)) = options.get(next)
+            {
+                *current = v.clone();
+                changed = true;
+                hovered = Some(v.clone());
+                wheeled = true;
+            }
+        }
         for (v, l) in options {
             let item = ui.selectable_label(v == current, tl!(l));
+            if wheeled && v == current {
+                // Keep the wheeled-to row visible in a list taller than its popup.
+                item.scroll_to_me(Some(egui::Align::Center));
+            }
             if item.hovered() {
                 hovered = Some(v.clone());
             }
@@ -838,6 +861,31 @@ pub fn dropdown_hovered<T: PartialEq + Clone>(ui: &mut Ui, id: &str, current: &m
     });
     let stepped = combo_box_arrow_keys(ui, &response.response, current, options);
     (changed || stepped, hovered)
+}
+
+/// The wheel's step through an open dropdown's choices this frame (#2061): `+1` is the next
+/// choice, `-1` the previous, growing with the notches turned. A wheel over the list is eaten, so
+/// the list itself does not scroll under the selection. `None` when the pointer is elsewhere or
+/// the wheel did not make a whole notch.
+fn combo_box_wheel_step(ui: &mut Ui) -> Option<i32> {
+    if !ui.rect_contains_pointer(ui.max_rect()) {
+        return None;
+    }
+    let step = (-wheel_notches_at(ui, ui.id().with("wheel-acc"))).round() as i32;
+    if step == 0 {
+        return None;
+    }
+    // Consume the wheel before the popup's scroll area reads it, so it walks the list, not scrolls it.
+    ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+    Some(step)
+}
+
+/// Index `index` moved `step` choices through a list of `len`, clamped to the ends (`None` when
+/// it does not move, or the list is empty). Hostile steps cannot overflow the arithmetic.
+fn stepped_index(index: usize, len: usize, step: i32) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    let next = (index as i64 + i64::from(step)).clamp(0, last as i64) as usize;
+    (next != index).then_some(next)
 }
 
 /// Give a dropdown keyboard focus when it opens, then use the arrow keys to move through its
@@ -922,8 +970,24 @@ pub fn dropdown_with_tooltips<T: PartialEq + Clone>(ui: &mut Ui, id: &str, curre
     let label = options.iter().find(|(v, _, _)| v == current).map(|(_, l, _)| tl!(l)).unwrap_or("—");
     let mut changed = false;
     let response = egui::ComboBox::from_id_salt(id).selected_text(label).width(width).height(420.0).icon(chevron_icon).show_ui(ui, |ui| {
+        // The wheel walks the open list (#2061) instead of scrolling it.
+        let mut wheeled = false;
+        if let Some(step) = combo_box_wheel_step(ui) {
+            let index = options.iter().position(|(v, _, _)| v == current).unwrap_or(0);
+            if let Some(next) = stepped_index(index, options.len(), step)
+                && let Some((v, _, _)) = options.get(next)
+            {
+                *current = v.clone();
+                changed = true;
+                wheeled = true;
+            }
+        }
         for (v, l, tip) in options {
-            if ui.selectable_label(v == current, tl!(l)).on_hover_text(tl!(tip)).clicked() {
+            let item = ui.selectable_label(v == current, tl!(l)).on_hover_text(tl!(tip));
+            if wheeled && v == current {
+                item.scroll_to_me(Some(egui::Align::Center));
+            }
+            if item.clicked() {
                 *current = v.clone();
                 changed = true;
             }
@@ -1296,6 +1360,86 @@ mod tests {
         h.key_press(egui::Key::ArrowUp);
         h.run();
         assert_eq!(*h.state(), 0);
+    }
+
+    /// #2061: the wheel walks the choices of an open dropdown, like the arrow keys, instead of
+    /// scrolling its list.
+    #[test]
+    fn mouse_wheel_steps_an_open_dropdown() {
+        use egui::accesskit::Role;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut h = Harness::builder().with_size(egui::vec2(300.0, 200.0)).build_ui_state(
+            |ui, selected: &mut usize| {
+                let options = [(0, "Normal"), (1, "Multiply"), (2, "Screen")];
+                super::dropdown(ui, "blend-mode", selected, &options, 120.0);
+            },
+            0,
+        );
+        let wheel = |h: &Harness<'_, usize>, dy: f32| {
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, dy),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+        };
+        h.get_by_role(Role::ComboBox).click();
+        h.run();
+        // The pointer sits on the button; the list hangs below it, so move onto a row first.
+        h.hover_at(h.get_by_label("Multiply").rect().center());
+        h.run();
+        wheel(&h, -1.0);
+        h.run();
+        assert_eq!(*h.state(), 1, "a notch down takes the next mode");
+        wheel(&h, -1.0);
+        h.run();
+        assert_eq!(*h.state(), 2, "and the next");
+        wheel(&h, -1.0);
+        h.run();
+        assert_eq!(*h.state(), 2, "the list clamps at its end");
+        wheel(&h, 2.0);
+        h.run();
+        assert_eq!(*h.state(), 0, "two notches up step twice");
+    }
+
+    /// The wheel only walks the list when the pointer is over it, so a wheel elsewhere in the
+    /// panel doesn't quietly change an open dropdown.
+    #[test]
+    fn mouse_wheel_off_the_list_leaves_the_dropdown_alone() {
+        use egui::accesskit::Role;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut h = Harness::builder().with_size(egui::vec2(300.0, 200.0)).build_ui_state(
+            |ui, selected: &mut usize| {
+                let options = [(0, "Normal"), (1, "Multiply"), (2, "Screen")];
+                super::dropdown(ui, "blend-mode", selected, &options, 120.0);
+            },
+            0,
+        );
+        h.get_by_role(Role::ComboBox).click();
+        h.run();
+        // The pointer stays on the button, off the list.
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -1.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        assert_eq!(*h.state(), 0);
+    }
+
+    #[test]
+    fn a_step_through_a_dropdown_never_overflows() {
+        assert_eq!(super::stepped_index(1, 3, 1), Some(2));
+        assert_eq!(super::stepped_index(1, 3, -1), Some(0));
+        assert_eq!(super::stepped_index(0, 3, -1), None, "already at the top");
+        assert_eq!(super::stepped_index(2, 3, 1), None, "already at the bottom");
+        assert_eq!(super::stepped_index(0, 0, 1), None, "nothing to walk");
+        assert_eq!(super::stepped_index(1, 3, i32::MAX), Some(2), "a wild step still clamps");
+        assert_eq!(super::stepped_index(1, 3, i32::MIN), Some(0));
+        assert_eq!(super::stepped_index(0, 3, i32::MIN), None, "already at the top");
     }
 }
 
