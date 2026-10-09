@@ -792,6 +792,7 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "textEdit": app.ui.text_edit,
         "typeTransform": app.ui.type_transform,
         "layerMenu": app.ui.layer_menu,
+        "brushPicker": app.ui.brush_picker,
         "canvasToolMenu": app.ui.canvas_tool_menu.as_ref().map(|menu| {
             json!({
                 "pos": menu.pos,
@@ -954,6 +955,52 @@ mod tests {
         let dialog = chosen["result"]["dialog"].as_u64().unwrap();
         assert_eq!(call(&mut app, &ctx, "ui.dialog.confirm", json!({"dialog":dialog}))["ok"], true);
         assert!(app.session.active().unwrap().doc.selection.is_some());
+    }
+
+    #[test]
+    fn painting_tool_right_pointer_opens_brush_picker_and_escape_closes() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 32, "height": 32})).unwrap();
+        app.ui.tool = Tool::Brush;
+        app.sync_views();
+
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                let ctx = ui.ctx().clone();
+                if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::default());
+        h.run_steps(4);
+        let ctx = h.ctx.clone();
+
+        // Before right-click: brushPicker is null (closed).
+        let inspected = call(h.state_mut(), &ctx, "ui.inspect", json!({}));
+        assert_eq!(inspected["result"]["brushPicker"], Value::Null);
+
+        // Right-click with painting tool via ui.pointer opens the brush picker.
+        let events = json!([{"kind": "down", "x": 16, "y": 16}, {"kind": "up", "x": 16, "y": 16}]);
+        let result = call(h.state_mut(), &ctx, "ui.pointer", json!({"tool": "Brush", "button": "secondary", "events": events}));
+        assert_eq!(result["ok"], true);
+
+        // Open state: brushPicker reports the picker's screen coordinates.
+        let inspected = call(h.state_mut(), &ctx, "ui.inspect", json!({}));
+        assert!(inspected["result"]["brushPicker"].is_array(), "picker coordinates reported when open");
+        let coords = inspected["result"]["brushPicker"].as_array().unwrap();
+        assert_eq!(coords.len(), 2);
+        assert!(coords[0].as_f64().unwrap().is_finite());
+        assert!(coords[1].as_f64().unwrap().is_finite());
+
+        // Escape closes the brush picker.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+
+        let inspected = call(h.state_mut(), &ctx, "ui.inspect", json!({}));
+        assert_eq!(inspected["result"]["brushPicker"], Value::Null, "picker closed after Escape");
     }
 
     #[test]
