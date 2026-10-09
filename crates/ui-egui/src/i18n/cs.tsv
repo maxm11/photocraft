@@ -2250,6 +2250,10 @@ fontWeight	Italic	Kurzíva
 	Reset View	Obnovit zobrazení
 	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Tažením kolem středu otočíte zobrazení  ·  Shift omezí na 15°
 
+# Color Picker warnings
+	Out of gamut for printing: click for the nearest printable colour	Mimo gamut tisku: klepnutím zvolíte nejbližší tisknutelnou barvu
+	Not a web colour: click for the nearest web colour	Není webová barva: klepnutím zvolíte nejbližší webovou barvu
+
 # Eyedropper Sample Size and Sample (#1649).
 	Point Sample	Bodový vzorek
 	3 by 3 Average	Průměr 3 × 3

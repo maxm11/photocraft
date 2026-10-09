@@ -2289,6 +2289,10 @@ fontWeight	Italic	Kursiv
 	Reset View	Ansicht zurücksetzen
 	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Ziehen Sie um die Mitte, um die Ansicht zu drehen  ·  Umschalt rastet auf 15° ein
 
+# Color Picker warnings
+	Out of gamut for printing: click for the nearest printable colour	Außerhalb des Druckfarbumfangs: Klicken für die nächstliegende druckbare Farbe
+	Not a web colour: click for the nearest web colour	Keine Webfarbe: Klicken für die nächstliegende Webfarbe
+
 # Eyedropper Sample Size and Sample (#1649).
 	Point Sample	Punktprobe
 	3 by 3 Average	3 × 3 Durchschnitt

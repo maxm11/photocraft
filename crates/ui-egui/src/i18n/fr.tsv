@@ -2673,6 +2673,10 @@ fontWeight	Italic	Italique
 	Reset View	Réinitialiser la vue
 	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Faites glisser autour du centre pour tourner la vue  ·  Maj contraint à 15°
 
+# Color Picker warnings
+	Out of gamut for printing: click for the nearest printable colour	Hors de la gamme d’impression : cliquez pour la couleur imprimable la plus proche
+	Not a web colour: click for the nearest web colour	Pas une couleur web : cliquez pour la couleur web la plus proche
+
 # Eyedropper Sample Size and Sample (#1649).
 	Point Sample	Échantillon ponctuel
 	3 by 3 Average	Moyenne 3 × 3
