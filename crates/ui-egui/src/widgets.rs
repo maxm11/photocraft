@@ -829,28 +829,37 @@ pub fn dropdown<T: PartialEq + Clone>(ui: &mut Ui, id: &str, current: &mut T, op
 pub fn dropdown_hovered<T: PartialEq + Clone>(ui: &mut Ui, id: &str, current: &mut T, options: &[(T, &str)], width: f32) -> (bool, Option<T>) {
     let label = options.iter().find(|(v, _)| v == current).map(|(_, l)| tl!(l)).unwrap_or("—");
     let (mut changed, mut hovered) = (false, None);
+    // The wheel moves the highlight off the pointer, so the now-stationary pointer must stop
+    // previewing the row under it (which would show a mode the document doesn't have, #2061).
+    // The flag clears as soon as the pointer moves, and once the popup closes.
+    let nav_key = egui::Id::new(("pc-dd-wheel-nav", id));
     let response = egui::ComboBox::from_id_salt(id).selected_text(label).width(width).height(420.0).icon(chevron_icon).show_ui(ui, |ui| {
-        // The wheel walks the open list (#2061) instead of scrolling it, so the choice (and its
-        // preview) follows the wheel as it turns.
+        let mut wheel_nav = ui.data(|d| d.get_temp::<bool>(nav_key)).unwrap_or(false);
+        if ui.ctx().input(|i| i.pointer.delta() != Vec2::ZERO) {
+            wheel_nav = false;
+        }
+        // The wheel walks the open list (#2061) instead of scrolling it, so the choice follows the
+        // wheel as it turns.
         let mut wheeled = false;
         if let Some(step) = combo_box_wheel_step(ui) {
+            wheel_nav = true;
             let index = options.iter().position(|(v, _)| v == current).unwrap_or(0);
             if let Some(next) = stepped_index(index, options.len(), step)
                 && let Some((v, _)) = options.get(next)
             {
                 *current = v.clone();
                 changed = true;
-                hovered = Some(v.clone());
                 wheeled = true;
             }
         }
+        ui.data_mut(|d| d.insert_temp(nav_key, wheel_nav));
         for (v, l) in options {
             let item = ui.selectable_label(v == current, tl!(l));
             if wheeled && v == current {
                 // Keep the wheeled-to row visible in a list taller than its popup.
                 item.scroll_to_me(Some(egui::Align::Center));
             }
-            if item.hovered() {
+            if item.hovered() && !wheel_nav {
                 hovered = Some(v.clone());
             }
             if item.clicked() {
@@ -859,25 +868,24 @@ pub fn dropdown_hovered<T: PartialEq + Clone>(ui: &mut Ui, id: &str, current: &m
             }
         }
     });
+    if !egui::ComboBox::is_open(ui.ctx(), response.response.id) {
+        ui.data_mut(|d| d.remove::<bool>(nav_key));
+    }
     let stepped = combo_box_arrow_keys(ui, &response.response, current, options);
     (changed || stepped, hovered)
 }
 
 /// The wheel's step through an open dropdown's choices this frame (#2061): `+1` is the next
-/// choice, `-1` the previous, growing with the notches turned. A wheel over the list is eaten, so
-/// the list itself does not scroll under the selection. `None` when the pointer is elsewhere or
-/// the wheel did not make a whole notch.
+/// choice, `-1` the previous, growing with the notches turned. While the pointer is over the list
+/// the wheel is eaten — even its fractional and smoothed-tail parts — so the popup never scrolls
+/// under the selection. `None` when the pointer is elsewhere or the wheel made no whole notch.
 fn combo_box_wheel_step(ui: &mut Ui) -> Option<i32> {
     if !ui.rect_contains_pointer(ui.max_rect()) {
         return None;
     }
-    let step = (-wheel_notches_at(ui, ui.id().with("wheel-acc"))).round() as i32;
-    if step == 0 {
-        return None;
-    }
-    // Consume the wheel before the popup's scroll area reads it, so it walks the list, not scrolls it.
     ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
-    Some(step)
+    let step = (-wheel_notches_at(ui, ui.id().with("wheel-acc"))).round() as i32;
+    (step != 0).then_some(step)
 }
 
 /// Index `index` moved `step` choices through a list of `len`, clamped to the ends (`None` when
@@ -1428,6 +1436,68 @@ mod tests {
         });
         h.run();
         assert_eq!(*h.state(), 0);
+    }
+
+    /// A wheel moves the highlight off the pointer, so the now-stationary pointer must not keep
+    /// previewing the row under it (#2061): the preview would show a mode the document doesn't
+    /// have until the popup closes.
+    #[test]
+    fn a_wheel_step_clears_the_stale_hover_preview() {
+        use egui::accesskit::Role;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut h = Harness::builder().with_size(egui::vec2(300.0, 200.0)).build_ui_state(
+            |ui, s: &mut (usize, Option<usize>)| {
+                let options = [(0, "Normal"), (1, "Dissolve"), (2, "Multiply")];
+                s.1 = super::dropdown_hovered(ui, "blend-mode", &mut s.0, &options, 120.0).1;
+            },
+            (0, None),
+        );
+        h.get_by_role(Role::ComboBox).click();
+        h.run();
+        let multiply = h.get_by_label("Multiply").rect().center();
+        h.hover_at(multiply);
+        h.run();
+        assert_eq!(h.state().1, Some(2), "hovering Multiply previews it");
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -1.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        assert_eq!(h.state().0, 1, "the wheel picked Dissolve");
+        assert_eq!(h.state().1, None, "the stationary pointer stops previewing Multiply");
+        // Moving the pointer hands the preview back.
+        h.hover_at(h.get_by_label("Dissolve").rect().center());
+        h.run();
+        assert_eq!(h.state().1, Some(1), "moving the pointer previews again");
+    }
+
+    /// #2061: while the pointer is over the list the wheel is eaten whole — including the
+    /// fractional part of a high-resolution wheel/trackpad — so the popup never scrolls under the
+    /// selection, even on frames with no wheel event of their own (the smoothing tail).
+    #[test]
+    fn a_fractional_wheel_over_the_list_is_eaten_not_scrolled() {
+        use egui_kittest::Harness;
+
+        let mut h = Harness::builder().with_size(egui::vec2(200.0, 120.0)).build_ui_state(
+            |ui, leftover: &mut f32| {
+                let _ = super::combo_box_wheel_step(ui);
+                *leftover = ui.input(|i| i.smooth_scroll_delta.y);
+            },
+            0.0,
+        );
+        h.hover_at(egui::pos2(100.0, 60.0));
+        h.run();
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 12.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(1);
+        assert_eq!(*h.state(), 0.0, "a fractional wheel over the list is eaten, not left to scroll");
     }
 
     #[test]

@@ -84,6 +84,7 @@ fn mouse_wheel_steps_the_open_blend_mode_dropdown() {
     wheel(&h, -1.0);
     h.run_steps(2);
     assert_ne!(blend(&h), BlendMode::Normal, "a notch down picks the next mode");
+    assert!(crate::blend_preview::display_doc(h.state_mut(), 0).is_none(), "the stationary pointer must not preview a mode the layer doesn't have");
     wheel(&h, 1.0);
     h.run_steps(2);
     assert_eq!(blend(&h), BlendMode::Normal, "a notch up goes back");
