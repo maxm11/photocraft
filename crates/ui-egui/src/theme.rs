@@ -315,6 +315,7 @@ impl Tokens {
             },
             // Ethan Schoonover's Solarized Dark palette: base03 canvas, base02 surfaces, base0
             // body text and the Solarized blue accent. https://ethanschoonover.com/solarized/
+            // (MIT; see LICENSE-solarized.txt)
             ThemeKind::SolarizedDark => Tokens {
                 kind,
                 chrome: Color32::from_rgb(7, 54, 66),
