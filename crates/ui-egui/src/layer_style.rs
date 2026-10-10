@@ -774,7 +774,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
                         egui::Align2::LEFT_CENTER,
                         tl!(kind_label),
                         egui::FontId::proportional(12.5),
-                        if on || is_sel { t.text } else { t.text_dim },
+                        if on { t.text } else { t.text_faint },
                     );
                     // + adds another instance; − removes one once there are several.
                     if multi(kind) {
@@ -1403,6 +1403,51 @@ mod tests {
         let column = boxes.iter().map(|r| r.min.x).fold(f32::INFINITY, f32::min);
         let rows = boxes.iter().filter(|r| (r.min.x - column).abs() < 0.5).count();
         assert_eq!(rows, KINDS.len(), "one empty checkbox per effect row");
+    }
+
+    /// Text shapes and their paint colour, for inspecting label styling.
+    fn text_colors(out: &egui::FullOutput) -> Vec<(String, Color32, egui::Rect)> {
+        fn walk(s: &egui::Shape, v: &mut Vec<(String, Color32, egui::Rect)>) {
+            match s {
+                egui::Shape::Text(t) => v.push((t.galley.text().to_string(), t.fallback_color, egui::Rect::from_min_size(t.pos, t.galley.size()))),
+                egui::Shape::Vec(s) => s.iter().for_each(|s| walk(s, v)),
+                _ => {}
+            }
+        }
+        let mut v = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut v));
+        v
+    }
+
+    /// #2288: unchecking an effect's box must restore the faint label of an effect that was never
+    /// added, even while the row stays selected — the text must not read as though it is on.
+    #[test]
+    fn disabled_effect_label_reads_as_faint() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 32, "height": 32})).unwrap();
+        let l = Layer::raster("x", photocraft_doc::PixelFormat::RGBA8);
+        let mut fields = initial_fields(&l, Some("bevelEmboss"), 120.0);
+        // The instance exists and stays selected, but is switched off.
+        if let Some(e) = entry_mut(&mut fields, "fx1") {
+            e["on"] = json!(false);
+        }
+        assert_eq!(fields["selected"], json!("fx1"));
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 700.0)).build_ui_state(
+            move |ui, app: &mut PhotocraftApp| {
+                if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                let mut f = fields.clone();
+                body(app, ui, &mut f);
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ProMedium);
+        h.run_steps(3);
+        let t = crate::theme::Tokens::for_kind(crate::theme::ThemeKind::ProMedium);
+        let label = |name: &str| text_colors(h.output()).into_iter().filter(|(s, _, r)| s == name && r.min.x < 250.0).map(|(_, c, _)| c).next();
+        assert_eq!(label("Bevel & Emboss"), Some(t.text_faint), "a disabled effect keeps the faint label");
+        assert_eq!(label("Stroke"), Some(t.text_faint), "an effect not on the layer is faint too");
     }
 
     #[test]
