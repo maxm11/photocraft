@@ -356,8 +356,11 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             }
             Ok(Value::Null)
         }
-        // Layer Content Options…: the adjustment / fill controls live in Properties.
+        // Solid Color uses the Color Picker; other adjustment / fill controls use Properties.
         "layer.layerContentOptions" => {
+            if let Some(dialog) = crate::solid_fill_ui::open(app) {
+                return Ok(json!({"dialog": dialog}));
+            }
             let r = app.run(id, params)?;
             app.ui.panels.properties = true;
             app.ui.dock_tabs.properties = 0;
@@ -1235,7 +1238,11 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
     let (nav, color, layers, history, props) = match app.ui.workspace.as_str() {
         "Photography" => (true, false, true, true, true),
         "Painting" => (false, true, true, false, false),
-        "Graphic and Web" => (false, true, true, false, true),
+        // Leave room for typography alongside Properties and Layers.
+        "Graphic and Web" => (false, false, true, false, true),
+        // Color includes Swatches; Navigator keeps the pixel canvas easy to inspect.
+        "Pixel Art" => (true, true, true, false, false),
+        "Motion" => (false, false, true, false, true),
         _ => (false, true, true, false, true),
     };
     p.navigator = nav;
@@ -1243,7 +1250,13 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
     p.layers = layers;
     p.history = history;
     p.properties = props;
-    p.character = false;
+    p.character = app.ui.workspace == "Graphic and Web";
+    // Timeline is a floating panel, not a dock group. Showing it does not create or edit
+    // a document timeline; changing away from Motion closes it just like its Close button.
+    app.ui.timeline.open = app.ui.workspace == "Motion";
+    if !app.ui.timeline.open {
+        app.ui.timeline.playing = false;
+    }
 }
 
 #[cfg(test)]
