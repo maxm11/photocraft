@@ -45,6 +45,7 @@ pub mod gallery_cmds;
 pub mod gradient_fill_cmds;
 pub mod group_view_cmds;
 pub mod hidden_target;
+pub mod history_cmds;
 pub mod image_cmds;
 pub mod inspect;
 pub mod jobs;
@@ -84,6 +85,7 @@ pub mod slice_cmds;
 pub mod smart_cmds;
 pub mod smartselect_cmds;
 pub mod snap;
+pub mod solid_fill_cmds;
 pub mod stamp_cmds;
 pub mod swatch_cmds;
 pub mod symmetry_cmds;
@@ -251,6 +253,10 @@ pub struct ToolState {
     /// The coalescing key of the running `tools.setBrush` gesture and the brush before it, so the
     /// gesture journals as one call ([`brush_cmds::coalesce_journal`]).
     pub brush_gesture: Option<(String, photocraft_paint::BrushSettings)>,
+    /// Name of the preset the current brush was last picked from. Kept across later edits (the
+    /// preset stays "the current brush" so `brush.presets.update` can overwrite it); cleared when
+    /// the brush is reset or the preset is gone.
+    pub current_preset: Option<String>,
 }
 
 impl Default for ToolState {
@@ -267,6 +273,7 @@ impl Default for ToolState {
             presets_rev: 0,
             mixer: Default::default(),
             brush_gesture: None,
+            current_preset: None,
         }
     }
 }
@@ -643,4 +650,9 @@ pub(crate) fn fix_selection(st: &mut DocState) {
 #[cfg(test)]
 mod fill_layer_mode_tests;
 #[cfg(test)]
+mod pattern_mode_tests;
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fx_mode_tests;

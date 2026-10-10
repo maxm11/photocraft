@@ -63,12 +63,15 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("window.togglePanels", "Show/Hide All Panels", &[], Some("Tab")),
     ("window.toggle.dock", "Show/Hide Panels", &[], Some("Shift+Tab")),
     ("window.toggle.options", "Options", &["Window"], None),
-    ("window.theme.toggle", "Next Theme", &["Window"], None),
+    ("window.theme.toggle", "Next Appearance Mode", &["Window"], None),
     ("window.theme.pro", "Pro Theme", &["Window", "Theme"], None),
     ("window.theme.proMedium", "Pro Medium Gray Theme", &["Window", "Theme"], None),
     ("window.theme.studio", "Studio Theme", &["Window", "Theme"], None),
     ("window.theme.studioLight", "Studio Light Theme", &["Window", "Theme"], None),
     ("window.theme.classic", "Classic Theme", &["Window", "Theme"], None),
+    ("window.theme.solarizedDark", "Solarized Dark Theme", &["Window", "Theme"], None),
+    ("window.theme.adwaita", "Adwaita Light Theme", &["Window", "Theme"], None),
+    ("window.theme.adwaitaDark", "Adwaita Dark Theme", &["Window", "Theme"], None),
     ("edit.search", "Search…", &["Edit"], Some("Cmd+F")),
     ("help.discord", "Join the ArtCraft Discord…", &["Help"], None),
     ("help.website", "PhotoCraft Website", &["Help"], None),
@@ -301,11 +304,17 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             Ok(json!({"window": wid}))
         }
         "window.theme.toggle" => {
-            let next = app.ui.theme.next();
-            app.set_theme(ctx, next);
+            crate::prefs_ui::cycle_appearance(app, ctx);
             Ok(Value::Null)
         }
-        "window.theme.pro" | "window.theme.proMedium" | "window.theme.studio" | "window.theme.studioLight" | "window.theme.classic" => {
+        "window.theme.pro"
+        | "window.theme.proMedium"
+        | "window.theme.studio"
+        | "window.theme.studioLight"
+        | "window.theme.classic"
+        | "window.theme.solarizedDark"
+        | "window.theme.adwaita"
+        | "window.theme.adwaitaDark" => {
             let k = crate::theme::ThemeKind::from_name(&id["window.theme.".len()..]).unwrap_or_default();
             app.set_theme(ctx, k);
             Ok(Value::Null)
@@ -350,8 +359,11 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             }
             Ok(Value::Null)
         }
-        // Layer Content Options…: the adjustment / fill controls live in Properties.
+        // Solid Color uses the Color Picker; other adjustment / fill controls use Properties.
         "layer.layerContentOptions" => {
+            if let Some(dialog) = crate::solid_fill_ui::open(app) {
+                return Ok(json!({"dialog": dialog}));
+            }
             let r = app.run(id, params)?;
             app.ui.panels.properties = true;
             app.ui.dock_tabs.properties = 0;
@@ -1229,7 +1241,11 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
     let (nav, color, layers, history, props) = match app.ui.workspace.as_str() {
         "Photography" => (true, false, true, true, true),
         "Painting" => (false, true, true, false, false),
-        "Graphic and Web" => (false, true, true, false, true),
+        // Leave room for typography alongside Properties and Layers.
+        "Graphic and Web" => (false, false, true, false, true),
+        // Color includes Swatches; Navigator keeps the pixel canvas easy to inspect.
+        "Pixel Art" => (true, true, true, false, false),
+        "Motion" => (false, false, true, false, true),
         _ => (false, true, true, false, true),
     };
     p.navigator = nav;
@@ -1237,7 +1253,13 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
     p.layers = layers;
     p.history = history;
     p.properties = props;
-    p.character = false;
+    p.character = app.ui.workspace == "Graphic and Web";
+    // Timeline is a floating panel, not a dock group. Showing it does not create or edit
+    // a document timeline; changing away from Motion closes it just like its Close button.
+    app.ui.timeline.open = app.ui.workspace == "Motion";
+    if !app.ui.timeline.open {
+        app.ui.timeline.playing = false;
+    }
 }
 
 #[cfg(test)]
